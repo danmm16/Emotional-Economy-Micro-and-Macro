@@ -273,12 +273,23 @@ cd emotive-mind
 npm install
 ```
 
-Copy `EmotiveMind.jsx` and `CaseFile.jsx` into `src/components/`.
+Copy `EmotiveMind.jsx`, `CaseFile.jsx`, and `HyperbolicMind.jsx` into `src/components/`.
 
 ```jsx
-// src/App.jsx
+// src/App.jsx — run either component or both
 import EmotiveMind from './components/EmotiveMind'
+import HyperbolicMind from './components/HyperbolicMind'
+
+// To run EmotiveMind:
 export default function App(){ return <EmotiveMind /> }
+
+// To run HyperbolicMind:
+// export default function App(){ return <HyperbolicMind /> }
+
+// To run both stacked:
+// export default function App(){
+//   return <><EmotiveMind /><HypolicMind /></>
+// }
 ```
 
 ```bash
@@ -304,6 +315,19 @@ export default async function handler(req, res) {
 ```
 
 Change the fetch URL in `EmotiveMind.jsx` from `https://api.anthropic.com/v1/messages` to `/api/claude`. Add `ANTHROPIC_API_KEY` to Vercel environment variables.
+
+### MRI Without a Paid Key
+
+The simulation (both EmotiveMind and HyperbolicMind) runs entirely in the browser with no API calls. The MRI "Read State" feature is the only part that requires a key — everything else is free.
+
+To use MRI at no cost, Anthropic offers a free tier for new accounts:
+
+1. Sign up at **console.anthropic.com**
+2. A free credit allocation is provided on registration — enough for hundreds of MRI readings
+3. Generate an API key under **API Keys**
+4. When running locally, the components call the Anthropic API directly using that key (no proxy needed in development)
+
+Each MRI call consumes roughly 400 tokens (~$0.001 at standard rates), so even a paid key is negligible for personal use.
 
 ---
 

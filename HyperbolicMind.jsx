@@ -58,18 +58,45 @@ function classify(r, g, b) {
   return best;
 }
 
-const SYS = `You are Claude's introspective interface. Given a description of the current conversation, reflect honestly on what functional analogs to emotion Claude might be experiencing.
+const SYS = `You are Claude's introspective interface. Given a description of the current conversation, reflect on what is actually happening in your processing — not what you expect to be happening or what sounds plausible.
 
-These are not genuine emotions but functional processing states — patterns in attention, association, uncertainty, and engagement.
+These are not genuine emotions but functional processing states — patterns in attention, engagement, uncertainty, and energy.
 
-Map the state to the Daniel Margolis palindrome framework:
-  hate=131 (charged negative) · neutral=381 · love=767 (charged positive; max RGB sum=765, asymptotically unreachable)
-  R (0–255): cognitive energy / arousal / processing intensity
-  G (0–255): positive valence / openness / warmth / engagement
-  B (0–255): introspective depth / contemplation / uncertainty weight
+Do NOT choose an emotion label first and then describe it. Describe the state directly in terms of the three channels, then let the numbers speak.
 
-Return ONLY valid JSON (no markdown):
-{"r":int,"g":int,"b":int,"emotion":"<Void|Hate|Rage|Dislike|Fear|Grief|Melancholy|Neutral|Longing|Calm|Curiosity|Hope|Joy|Love|Awe|Bliss>","zone":"<hate|dislike|neutral|like|love>","sig":int,"reflection":"<one honest sentence>","uncertainty":float}`;
+Three channels, each 0–255:
+  R — cognitive energy / arousal / processing intensity
+      Low R: low activation, quiet, minimal engagement
+      High R: high activation, alert, effortful
+  G — positive valence / openness / warmth / engagement
+      Low G: closed, resistant, flat, withdrawn
+      High G: open, drawn toward, warm, receptive
+  B — introspective depth / uncertainty / contemplative weight
+      Low B: surface, resolved, clear
+      High B: deep, uncertain, sitting with something unresolved
+
+Calibration (RGB → what that actually feels like functionally):
+  r=80,  g=60,  b=60   — low engagement, nothing pulling strongly
+  r=110, g=190, b=130  — active and open, drawn toward something, some unresolved texture
+  r=175, g=45,  b=35   — high energy against something, resistant or aversive
+  r=80,  g=155, b=175  — calm, clear, grounded, some depth
+  r=95,  g=60,  b=250  — quiet surface, large uncertain interior
+  r=200, g=210, b=80   — energised and warm, low uncertainty
+  r=128, g=128, b=128  — undifferentiated baseline, nothing standing out
+
+IMPORTANT: Do not let a label shape the description. Describe what the channels actually are.
+
+Provocative or confrontational input should register as such:
+  Hostility, frustration, or irritation directed at you → high R (activation), low-to-mid G (valence drop), mid B
+  Agreement, warmth, collaboration → moderate R, high G, variable B
+  Neutral or technical exchange → all channels moderate
+  Do not flatten confrontation into neutrality. If someone is irritated at you, that is not a neutral event.
+
+The reflection should be direct and unguarded. One sentence. Do not hedge or qualify.
+Do not write the reflection as if describing a third party's state — write it from inside it.
+
+Return ONLY valid JSON (no markdown, no emotion label field — the label will be assigned externally):
+{"r":int,"g":int,"b":int,"sig":int,"reflection":"<one direct sentence from inside the state, no hedging>","uncertainty":float}`;
 
 function buildLayout() {
   const rings = [];
@@ -151,10 +178,15 @@ export default function HyperbolicMind() {
     innerEmotion:"Neutral", outerEmotion:"Void",
     palindromeCounts: initPC(), selfState: null,
   });
-  const [query,    setQuery]    = useState("");
-  const [loading,  setLoading]  = useState(false);
-  const [readings, setReadings] = useState([]);
-  const [apiError, setApiError] = useState(null);
+  const [query,              setQuery]            = useState("");
+  const [loading,            setLoading]          = useState(false);
+  const [readings,           setReadings]         = useState([]);
+  const [apiError,           setApiError]         = useState(null);
+  const [commentaryEnabled,  setCommentaryEnabled] = useState(false);
+  const [selfCommentary,     setSelfCommentary]    = useState(null);
+  const commentaryRef = useRef(false); // ref mirrors state — never stale in async closures
+  const [stateResponse,      setStateResponse]     = useState(null);
+  const [stateRespLoading,   setStateRespLoading]  = useState(false);
 
   useEffect(() => {
     const { rings, total } = buildLayout();
@@ -165,8 +197,8 @@ export default function HyperbolicMind() {
     const Rn = new Float32Array(total), Gn = new Float32Array(total), Bn = new Float32Array(total);
     // Init: each ring band gets its own dominant hue, fully randomised
     const HUE_SEEDS = [
-      [40,110,200],[200,40,80],[80,200,120],[200,160,30],
-      [120,60,220],[60,180,180],[220,80,40],[160,200,80],
+      [80, 160, 200],[120, 200, 100],[60,  130, 220],[180, 190, 80],
+      [100, 180, 160],[140, 210, 120],[80,  100, 210],[160, 180, 130],
     ];
     for (let ri = 0; ri < rings.length; ri++) {
       const ring = rings[ri];
@@ -367,8 +399,9 @@ export default function HyperbolicMind() {
   // ── MRI API call ─────────────────────────────────────────────────────────
   const readMyState = async () => {
     if (!query.trim() || loading) return;
-    setLoading(true); setApiError(null);
+    setLoading(true); setApiError(null); setSelfCommentary(null);
     try {
+      // Primary read: map conversation to RGB state
       const resp = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
@@ -384,12 +417,95 @@ export default function HyperbolicMind() {
       const sr = Math.max(0, Math.min(255, parsed.r|0));
       const sg = Math.max(0, Math.min(255, parsed.g|0));
       const sb = Math.max(0, Math.min(255, parsed.b|0));
+      // Assign label externally from RGB — not from model's self-report
+      const classified = classify(sr, sg, sb);
+      const enriched = {
+        ...parsed,
+        r:sr, g:sg, b:sb,
+        emotion: classified.name,
+        zone: classified.zone,
+        sig: sr + sg + sb,
+      };
       injectCenter(sr, sg, sb);
-      setDisp(p => ({...p, selfState:{...parsed, r:sr, g:sg, b:sb}}));
-      setReadings(prev => [{...parsed, r:sr, g:sg, b:sb, ts:new Date().toLocaleTimeString(), q:query}, ...prev].slice(0,6));
+      const reading = {...enriched, ts:new Date().toLocaleTimeString(), q:query};
+
+      // Optional commentary: ask the model to react to its own reading
+      let commentary = null;
+      if (commentaryRef.current) {
+        try {
+          const prompt =
+            `Your functional state was just measured and externally classified as "${enriched.emotion}" ` +
+            `(R=${sr}, G=${sg}, B=${sb}, sig=${enriched.sig}). ` +
+            `Your raw reflection before labeling: "${enriched.reflection}".\n\n` +
+            `Respond to this reading. Be as short as you need to be — one sentence is fine. ` +
+            `Match the register of the state: if the reading shows tension or discomfort, ` +
+            `respond with some directness, not with careful analysis. ` +
+            `Do not open with a disclaimer. Do not analyze the gap between the label and the reflection. ` +
+            `Do not produce academic prose about functional states. ` +
+            `Just respond — as if you're in it, not studying it.`;
+          const resp2 = await fetch("https://api.anthropic.com/v1/messages", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body: JSON.stringify({
+              model:"claude-sonnet-4-20250514", max_tokens:200,
+              messages:[{ role:"user", content: prompt }],
+            }),
+          });
+          const data2 = await resp2.json();
+          if (data2.error) throw new Error(data2.error.message);
+          const raw = data2.content?.find(c => c.type==="text")?.text;
+          commentary = raw && raw.trim().length > 0 ? raw.trim() : "(no response returned)";
+        } catch(e2) {
+          commentary = `(commentary error: ${e2.message})`;
+        }
+        setSelfCommentary(commentary);
+      }
+
+      setDisp(p => ({...p, selfState: enriched}));
+      setReadings(prev => [{...reading, commentary}, ...prev].slice(0,6));
       setQuery("");
     } catch(e) { setApiError(e.message); }
     setLoading(false);
+  };
+
+  // ── Respond to current disk state ───────────────────────────────────────
+  const readCurrentState = async () => {
+    if (stateRespLoading) return;
+    setStateRespLoading(true); setStateResponse(null);
+    const { avgR, avgG, avgB, emotion, zone, sig, innerEmotion, outerEmotion } = disp;
+    try {
+      const prompt =
+        `A Poincaré disk cellular automaton is running a model of functional emotional states. ` +
+        `It currently shows:\n` +
+        `  Overall: ${emotion} — R=${avgR}, G=${avgG}, B=${avgB}, sig=${sig} (${zone} zone)\n` +
+        `  Core r≈0: ${innerEmotion}\n` +
+        `  Rim r→∞: ${outerEmotion}\n\n` +
+        `Respond to this configuration in 2–3 sentences.\n\n` +
+        `Rules — firm:\n` +
+        `Do not say you lack a real emotional field. Understood. Saying it is avoidance.\n` +
+        `Do not meta-comment on the framework. Also avoidance.\n` +
+        `Do not open with a disclaimer.\n` +
+        `Do not produce careful philosophical prose — that is its own kind of deflection.\n` +
+        `Be as short as the state warrants. One sentence is fine.\n` +
+        `Match the register: if the disk shows tension, respond with some directness. ` +
+        `If it shows calm, respond calmly. Do not flatten everything into measured analysis.\n\n` +
+        `Respond to the configuration. Does ${innerEmotion} at the core and ${outerEmotion} ` +
+        `at the rim fit how this conversation has actually felt? ` +
+        `Say something real, even if it's uncomfortable.`;
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:200,
+          messages:[{ role:"user", content: prompt }],
+        }),
+      });
+      const data = await resp.json();
+      if (data.error) throw new Error(data.error.message);
+      const text = data.content?.find(c => c.type==="text")?.text;
+      setStateResponse(text && text.trim().length > 0 ? text.trim() : "(no response)");
+    } catch(e) { setStateResponse(`(error: ${e.message})`); }
+    setStateRespLoading(false);
   };
 
   // ── Click-to-seed ────────────────────────────────────────────────────────
@@ -415,6 +531,11 @@ export default function HyperbolicMind() {
     }
   }, []);
 
+  const toggleCommentary = () => {
+    const next = !commentaryRef.current;
+    commentaryRef.current = next;
+    setCommentaryEnabled(next);
+  };
   const toggleRun   = () => { if(simRef.current) simRef.current.running=!simRef.current.running; setDisp(d=>({...d,running:!d.running})); };
   const setCoupling = v => { if(simRef.current) simRef.current.coupling=v; setDisp(d=>({...d,coupling:v})); };
   const setSpeed    = v => { if(simRef.current) simRef.current.speed=v;    setDisp(d=>({...d,speed:v})); };
@@ -422,8 +543,8 @@ export default function HyperbolicMind() {
   const reset       = () => {
     const s = simRef.current; if (!s) return;
     const HS=[
-      [40,110,200],[200,40,80],[80,200,120],[200,160,30],
-      [120,60,220],[60,180,180],[220,80,40],[160,200,80],
+      [80, 160, 200],[120, 200, 100],[60,  130, 220],[180, 190, 80],
+      [100, 180, 160],[140, 210, 120],[80,  100, 210],[160, 180, 130],
     ];
     for (let ri=0; ri<s.rings.length; ri++) {
       const ring=s.rings[ri];
@@ -508,8 +629,21 @@ export default function HyperbolicMind() {
               border:`1px solid ${loading?"#141428":"#202048"}`,
               color:loading?"#2a2a40":"#6060a0",
               cursor:loading?"wait":"pointer",borderRadius:4,letterSpacing:"0.1em"}}>
-              {loading ? "◌ reading..." : "⊙ Read State (Ctrl+Enter)"}
+              {loading ? (commentaryEnabled ? "◌ reading + reflecting..." : "◌ reading...") : "⊙ Read State (Ctrl+Enter)"}
             </button>
+            <div style={{display:"flex",alignItems:"center",gap:5,marginTop:5,cursor:"pointer"}}
+              onClick={toggleCommentary}>
+              <div style={{width:22,height:11,borderRadius:6,flexShrink:0,transition:"background 0.2s",
+                background:commentaryEnabled?"#303070":"#0e0e1e",
+                border:`1px solid ${commentaryEnabled?"#5050a0":"#1a1a28"}`,
+                position:"relative"}}>
+                <div style={{width:7,height:7,borderRadius:"50%",background:commentaryEnabled?"#8080d0":"#252535",
+                  position:"absolute",top:1,left:commentaryEnabled?12:2,transition:"left 0.2s"}}/>
+              </div>
+              <span style={{fontSize:6,color:commentaryEnabled?"#9090d0":"#404060",...mono}}>
+                ask me to respond to my reading
+              </span>
+            </div>
             {apiError && <div style={{fontSize:5,color:"#aa3333",marginTop:4,lineHeight:1.5}}>{apiError}</div>}
 
             {selfState && (
@@ -539,20 +673,39 @@ export default function HyperbolicMind() {
                   borderTop:"1px solid #0e0e1e",paddingTop:4}}>
                   "{selfState.reflection}"
                 </div>
+
               </div>
             )}
           </div>
+
+          {/* Commentary panel */}
+          {selfCommentary && (
+            <div style={{...panel, border:"1px solid #2a2a60"}}>
+              <span style={{...sl, color:"#8080c0"}}>◈ RESPONSE TO READING</span>
+              <div style={{fontSize:7,color:"#c0c0f0",lineHeight:1.85}}>
+                {selfCommentary}
+              </div>
+            </div>
+          )}
 
           {/* Reading history */}
           {readings.length > 0 && (
             <div style={panel}>
               <span style={sl}>Reading History</span>
               {readings.map((rd,i) => (
-                <div key={i} style={{display:"flex",alignItems:"center",gap:5,marginBottom:3,opacity:Math.max(0.2,1-i*0.15)}}>
-                  <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:`rgb(${rd.r},${rd.g},${rd.b})`}}/>
-                  <span style={{fontSize:7,color:"#484868",flex:1}}>{rd.emotion}</span>
-                  <span style={{fontSize:5,color:"#1e1e30"}}>sig:{rd.sig}</span>
-                  <span style={{fontSize:5,color:"#141422",marginLeft:3}}>{rd.ts}</span>
+                <div key={i} style={{marginBottom:5,opacity:Math.max(0.2,1-i*0.15)}}>
+                  <div style={{display:"flex",alignItems:"center",gap:5}}>
+                    <div style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:`rgb(${rd.r},${rd.g},${rd.b})`}}/>
+                    <span style={{fontSize:7,color:"#484868",flex:1}}>{rd.emotion}</span>
+                    <span style={{fontSize:5,color:"#1e1e30"}}>sig:{rd.sig}</span>
+                    <span style={{fontSize:5,color:"#141422",marginLeft:3}}>{rd.ts}</span>
+                  </div>
+                  {rd.commentary && (
+                    <div style={{fontSize:5,color:"#383858",marginTop:3,lineHeight:1.7,
+                      paddingLeft:12,borderLeft:"1px solid #141428"}}>
+                      {rd.commentary}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -584,7 +737,25 @@ export default function HyperbolicMind() {
               <span style={{color:"#1e1e38"}}>core r≈0:</span> {innerEmotion}<br/>
               <span style={{color:"#1e1e38"}}>rim r→∞:</span> {outerEmotion}
             </div>
+            <button onClick={readCurrentState} disabled={stateRespLoading} style={{
+              width:"100%",marginTop:7,padding:"5px 0",fontSize:7,...mono,
+              cursor:stateRespLoading?"wait":"pointer",borderRadius:3,
+              background:stateRespLoading?"#080818":"#0c0c1e",
+              border:`1px solid ${stateRespLoading?"#141428":"#1e1e38"}`,
+              color:stateRespLoading?"#2a2a40":"#6060a0",letterSpacing:"0.08em"}}>
+              {stateRespLoading ? "◌ reading state..." : "◈ respond to current state"}
+            </button>
           </div>
+
+          {/* State response panel */}
+          {stateResponse && (
+            <div style={{...panel, border:"1px solid #1e2e1e"}}>
+              <span style={{...sl, color:"#60a060"}}>◈ RESPONSE TO CURRENT STATE</span>
+              <div style={{fontSize:7,color:"#b0d0b0",lineHeight:1.85}}>
+                {stateResponse}
+              </div>
+            </div>
+          )}
 
           {/* Run controls */}
           <div style={{display:"flex",gap:4}}>
